@@ -2207,6 +2207,40 @@ const PORTFOLIO_CONFIG = {
     });
   }
 
+  // Cloudinary delivery optimisation: adds f_auto (best format per browser) + q_auto (best quality/size)
+  // to any res.cloudinary.com image/video URL at render time. Your PORTFOLIO_CONFIG URLs stay untouched,
+  // and URLs that already carry a transformation are left alone.
+  function cld(url) {
+    var m = /^(https:\/\/res\.cloudinary\.com\/[^\/]+\/(?:image|video)\/upload\/)(.+)$/.exec(url);
+    if (!m) return url;
+    if (/^[a-z]{1,3}_[^\/]+\//.test(m[2])) return url;
+    return m[1] + 'f_auto,q_auto/' + m[2];
+  }
+  // Fallback for an <img>: explicit fallback first, else the original (non-transformed) URL
+  function imgFallback(src, explicit) {
+    var f = explicit || (cld(src) !== src ? src : '');
+    return f ? ' data-fallback="' + esc(f) + '"' : '';
+  }
+
+  // Scroll-based lazy loading for images: nothing is requested (so no Cloudinary bandwidth /
+  // transformation credit is used) until the image is within ~200px of the viewport.
+  var BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function lazySrc(url) {
+    return 'src="' + BLANK_PX + '" data-lazy-src="' + esc(cld(url)) + '"';
+  }
+  var imgLoader = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      var img = en.target;
+      img.src = img.getAttribute('data-lazy-src');
+      img.removeAttribute('data-lazy-src');
+      imgLoader.unobserve(img);
+    });
+  }, { rootMargin: '200px 0px' });
+  function observeLazyImages(root) {
+    (root || document).querySelectorAll('img[data-lazy-src]').forEach(function (img) { imgLoader.observe(img); });
+  }
+
   // Image fallback (e.g. Cloudinary -> ImgBB, maxres -> hq YouTube thumb). Registered before any render.
   document.addEventListener('error', function (e) {
     var t = e.target;
@@ -2225,9 +2259,9 @@ const PORTFOLIO_CONFIG = {
     host.innerHTML = PORTFOLIO_CONFIG.services.map(function (s, i) {
       return '<article class="exp glow-flow scroll-mask">' +
         '<div class="exp__cover">' +
-          '<img class="exp__img" src="' + esc(s.cover) + '" alt="' + esc(s.title) + ' cover" loading="lazy" />' +
+          '<img class="exp__img" ' + lazySrc(s.cover) + imgFallback(s.cover) + ' alt="' + esc(s.title) + ' cover" loading="lazy" decoding="async" />' +
           '<span class="exp__index">' + String(i + 1).padStart(2, '0') + '</span>' +
-          (s.badge ? '<img class="exp__badge" src="' + esc(s.badge) + '" alt="" loading="lazy" />' : '') +
+          (s.badge ? '<img class="exp__badge" ' + lazySrc(s.badge) + imgFallback(s.badge) + ' alt="" loading="lazy" decoding="async" />' : '') +
         '</div>' +
         '<div class="exp__main">' +
           '<div class="exp__body">' +
@@ -2259,9 +2293,9 @@ const PORTFOLIO_CONFIG = {
       }).join('');
       return '<article class="project glow-flow perspective-tilt scroll-mask" data-cat="' + esc(p.cat.join(' ')) + '">' +
         '<div class="project__visual" ' + trigger + ' role="button" tabindex="0" aria-label="' + esc(isYT ? 'Play ' + p.name : 'Open ' + p.name) + '">' +
-          '<img class="project__cover" src="' + esc(p.cover) + '"' +
-            (p.coverFallback ? ' data-fallback="' + esc(p.coverFallback) + '"' : '') +
-            ' alt="' + esc(p.title) + ' preview" loading="lazy" />' +
+          '<img class="project__cover" ' + lazySrc(p.cover) +
+            imgFallback(p.cover, p.coverFallback) +
+            ' alt="' + esc(p.title) + ' preview" loading="lazy" decoding="async" />' +
           '<div class="project__visual-label">' + esc(p.label) + '</div>' +
           '<div class="project__visual-title">' + esc(p.title) + '</div>' +
           (isYT ? PLAY_SVG : '') +
@@ -2283,7 +2317,7 @@ const PORTFOLIO_CONFIG = {
       return '<article class="project reel glow-flow perspective-tilt scroll-mask" data-cat="' + esc(r.cat.join(' ')) + '">' +
         '<div class="project__visual reel__visual" data-reel="' + i + '" data-ratio="h" role="button" tabindex="0" aria-label="Play ' + esc(r.title) + '">' +
           // src is assigned lazily (see reelLoader); #t=0.5 makes the browser show a real frame as the thumbnail
-          '<video class="reel__video" muted loop playsinline preload="metadata" data-src="' + esc(r.url) + '#t=0.5"></video>' +
+          '<video class="reel__video" muted loop playsinline preload="metadata" data-src="' + esc(cld(r.url)) + '#t=0.5" data-orig="' + esc(r.url) + '#t=0.5"></video>' +
           '<div class="project__visual-label">' + esc(r.tag) + '</div>' +
           PLAY_SVG +
         '</div>' +
@@ -2302,7 +2336,7 @@ const PORTFOLIO_CONFIG = {
         v.src = v.getAttribute('data-src');
         reelLoader.unobserve(v);
       });
-    }, { rootMargin: '400px 0px' });
+    }, { rootMargin: '200px 0px' });
 
     var canHover = window.matchMedia('(hover: hover)').matches;
     host.querySelectorAll('.reel').forEach(function (card) {
@@ -2310,6 +2344,13 @@ const PORTFOLIO_CONFIG = {
       var v = card.querySelector('video');
       v.addEventListener('loadedmetadata', function () {
         visual.setAttribute('data-ratio', v.videoHeight > v.videoWidth ? 'v' : 'h');
+      });
+      v.addEventListener('error', function () {
+        // transformed delivery refused (e.g. source too large) -> use the original file, once
+        if (!v.getAttribute('data-fellback') && v.getAttribute('data-orig') && v.getAttribute('src')) {
+          v.setAttribute('data-fellback', '1');
+          v.src = v.getAttribute('data-orig');
+        }
       });
       reelLoader.observe(v);
       if (canHover) {
@@ -2324,8 +2365,8 @@ const PORTFOLIO_CONFIG = {
     if (!host) return;
     host.innerHTML = PORTFOLIO_CONFIG.thumbnails.map(function (t, i) {
       return '<div class="thumb-card glow-flow scroll-mask" data-lightbox="' + i + '" role="button" tabindex="0" aria-label="Zoom: ' + esc(t.alt) + '">' +
-        '<img src="' + esc(t.src) + '"' + (t.fallback ? ' data-fallback="' + esc(t.fallback) + '"' : '') +
-        ' alt="' + esc(t.alt) + '" loading="lazy" />' +
+        '<img ' + lazySrc(t.src) + imgFallback(t.src, t.fallback) +
+        ' alt="' + esc(t.alt) + '" loading="lazy" decoding="async" />' +
         '<span class="thumb-card__label">' + esc(t.label) + '</span>' +
       '</div>';
     }).join('');
@@ -2344,6 +2385,7 @@ const PORTFOLIO_CONFIG = {
   renderReels();
   renderThumbnails();
   renderFilterBar();
+  observeLazyImages(document);
 
   // ============================================
   // REVEAL ENGINE (re-callable after any dynamic render)
@@ -2630,7 +2672,16 @@ const PORTFOLIO_CONFIG = {
       videoModalContent.setAttribute('data-ratio', videoPlayer.videoHeight > videoPlayer.videoWidth ? 'v' : 'h');
     };
     videoPlayer.muted = false;
-    videoPlayer.src = url;
+    videoPlayer.onerror = function () {
+      // transformed delivery refused -> retry once with the original file
+      if (videoPlayer.getAttribute('src') !== url && videoPlayer.getAttribute('src')) {
+        videoPlayer.onerror = null;
+        videoPlayer.src = url;
+        var rp = videoPlayer.play();
+        if (rp && rp.catch) rp.catch(function () {});
+      }
+    };
+    videoPlayer.src = cld(url);
     showModal();
     var pr = videoPlayer.play();
     if (pr && pr.catch) pr.catch(function () { /* autoplay blocked: user can press play */ });
@@ -2660,8 +2711,9 @@ const PORTFOLIO_CONFIG = {
     lightboxIndex = (i + list.length) % list.length;
     var item = list[lightboxIndex];
     delete lightboxImg.dataset.fellBack;
-    if (item.fallback) lightboxImg.dataset.fallback = item.fallback; else delete lightboxImg.dataset.fallback;
-    lightboxImg.src = item.src;
+    var lbFallback = item.fallback || (cld(item.src) !== item.src ? item.src : '');
+    if (lbFallback) lightboxImg.dataset.fallback = lbFallback; else delete lightboxImg.dataset.fallback;
+    lightboxImg.src = cld(item.src);
     lightboxImg.alt = item.alt;
     lightboxCap.textContent = item.label + '  —  ' + (lightboxIndex + 1) + ' / ' + list.length;
     lightbox.setAttribute('data-open', 'true');
